@@ -7,4 +7,6 @@ scikit-learn>=1.4
 plotly>=5.20
 streamlit>=1.36
 google-genai>=1.0
+fastapi>=0.115
+uvicorn>=0.30
 pytest>=8.0
