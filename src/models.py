@@ -9,10 +9,28 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import accuracy_score, f1_score
 
-NUMERIC = ["Prorated Billed Amount (Excl GST)", "Prorated Debit Amount (Excl tax)", "Debit/Billed Ratio",
-           "Previous Month Billing", "Site Historical Average", "Site Historical Std", "Rolling 3M Average",
-           "MoM Billing Change %", "Difference From Site Average %", "Month", "Quarter"]
-CATEGORICAL = ["Circle Code", "Vendor Code"]
+NUMERIC = [
+    "Prorated Billed Amount (Excl GST)",
+    "Prorated Debit Amount (Excl tax)",
+    "Prorated Debit Amount (Incl tax)",
+    "Billed Amount (Excl GST)",
+    "Debit Amount (Excl tax)",
+    "Debit Amount (Incl tax)",
+    "Debit/Billed Ratio",
+    "Bill Duration Days",
+    "Proration Days",
+    "Previous Month Billing",
+    "Site Historical Average",
+    "Site Historical Std",
+    "Rolling 3M Average",
+    "MoM Billing Change %",
+    "Difference From Site Average %",
+    "Month",
+    "Quarter",
+    "Invoice Month",
+    "Invoice Quarter",
+]
+CATEGORICAL = ["Circle Code", "Vendor Code", "IP Category"]
 
 
 def prepare_taxonomy(df: pd.DataFrame) -> pd.DataFrame:
@@ -131,7 +149,7 @@ class DisputeClassifier:
 def add_anomalies(df, contamination=0.10):
     out = df.copy()
     candidates = [c for c in NUMERIC if c in out and pd.to_numeric(out[c], errors="coerce").notna().any()]
-    use = [c for c in candidates if c not in {"Month", "Quarter"}][:8]
+    use = [c for c in candidates if c not in {"Month", "Quarter", "Invoice Month", "Invoice Quarter"}][:10]
     if not use:
         out["Is Anomaly"] = False
         out["Anomaly Percentile"] = 0.0
@@ -155,14 +173,37 @@ def add_anomalies(df, contamination=0.10):
     return out
 
 
+def _chronological_periods(df: pd.DataFrame) -> pd.Series:
+    # Invoice Date reflects when Vi received/processed the bill and is the safer
+    # evaluation clock when retro-billing creates historical billing periods.
+    if "Invoice Date" in df:
+        invoice = pd.to_datetime(df["Invoice Date"], errors="coerce")
+        if invoice.notna().sum() >= max(4, int(len(df) * 0.5)):
+            return invoice.dt.to_period("M")
+    return pd.to_datetime(df["Month-Year"], errors="coerce").dt.to_period("M")
+
+
 def evaluate_time_split(df, taxonomy, threshold=0.60):
-    months = pd.to_datetime(df["Month-Year"], errors="coerce")
-    uniq = sorted(months.dropna().dt.to_period("M").unique())
-    if len(uniq) < 4:
-        return {"error": "Need at least four months"}, pd.DataFrame()
-    cut = uniq[max(1, int(len(uniq) * 0.75) - 1)]
-    train = df[months.dt.to_period("M") <= cut]
-    test = df[months.dt.to_period("M") > cut]
+    periods = _chronological_periods(df)
+    valid = periods.notna()
+    counts = periods[valid].value_counts().sort_index()
+    if len(counts) < 4:
+        return {"error": "Need at least four chronological periods"}, pd.DataFrame()
+
+    # Select a whole-month cutoff that puts approximately 75% of rows in train,
+    # rather than 75% of unique months (which performs poorly with sparse retro bills).
+    cumulative = counts.cumsum()
+    target = counts.sum() * 0.75
+    cut_candidates = cumulative[cumulative >= target]
+    cut = cut_candidates.index[0] if not cut_candidates.empty else counts.index[-2]
+    if cut == counts.index[-1]:
+        cut = counts.index[-2]
+
+    train = df[periods <= cut]
+    test = df[periods > cut]
+    if train.empty or test.empty:
+        return {"error": "Chronological split produced an empty train or test set"}, pd.DataFrame()
+
     model = DisputeClassifier(threshold).fit(train, taxonomy)
     pred = model.predict(test)
     scored = pred[
@@ -170,6 +211,8 @@ def evaluate_time_split(df, taxonomy, threshold=0.60):
         & pred["Predicted Dispute Type"].ne("Manual Review Required")
     ]
     m = {
+        "time_basis": "Invoice Date" if "Invoice Date" in df and pd.to_datetime(df["Invoice Date"], errors="coerce").notna().sum() >= max(4, int(len(df) * 0.5)) else "Month-Year",
+        "cutoff_period": str(cut),
         "train_rows": len(train),
         "test_rows": len(test),
         "coverage": len(scored) / max(1, test["Dispute Type"].notna().sum()),
