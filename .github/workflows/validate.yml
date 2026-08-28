@@ -29,5 +29,10 @@ jobs:
       - name: Run unit tests
         run: python -m pytest -q
 
-      - name: Validate uploaded repository data
+      - name: Validate synthetic end-to-end architecture
         run: python scripts/validate_repository_data.py
+
+      - name: Smoke import Streamlit and API entrypoints
+        run: |
+          python -m py_compile streamlit_app.py api/main.py src/*.py
+          python -c "from api.main import app; assert app.title"
