@@ -11,6 +11,7 @@ from src.io_utils import read_path
 from src.models import (
     DisputeClassifier,
     add_anomalies,
+    canonicalize_target_labels,
     evaluate_time_split,
     prepare_taxonomy,
     valid_reasons,
@@ -110,50 +111,44 @@ def main():
     denominator = max(len(processed_sites), 1)
     print(f"[crosscheck] raw_sites={len(raw_sites)} processed_sites={len(processed_sites)} overlap_sites={overlap} overlap_pct={overlap/denominator:.1%}")
 
-    # Full real-data pipeline validation. Output only aggregate metrics; never print row-level data.
     prepared = prepare(raw, "raw")
     analytical = prepared.analytical
     print(f"[full_pipeline] analytical_rows={len(analytical)}")
     print(f"[full_pipeline] rejected_rows={len(prepared.rejected)}")
     print(f"[full_pipeline] months={analytical['Month-Year'].nunique()}")
-
-    eligible_total = 0
-    for head in ("EB", "DG"):
-        allowed = set(valid_reasons(taxonomy, head))
-        head_rows = analytical[analytical["Expense Nature"].astype(str).str.upper().eq(head)]
-        labelled = head_rows[head_rows["Dispute Type"].notna()] if "Dispute Type" in head_rows else head_rows.iloc[0:0]
-        eligible = labelled[labelled["Dispute Type"].isin(allowed)]
-        unmatched = labelled[~labelled["Dispute Type"].isin(allowed)]
-        eligible_total += len(eligible)
+    if "Invoice Date" in analytical:
+        inv = analytical["Invoice Date"].dropna()
         print(
-            f"[label_coverage:{head}] rows={len(head_rows)} labelled={len(labelled)} "
-            f"taxonomy_matched={len(eligible)} matched_classes={eligible['Dispute Type'].nunique() if not eligible.empty else 0} "
-            f"raw_classes={labelled['Dispute Type'].nunique() if not labelled.empty else 0} unmatched_rows={len(unmatched)} "
-            f"unmatched_classes={unmatched['Dispute Type'].nunique() if not unmatched.empty else 0}"
+            f"[invoice_time] valid_rows={len(inv)} unique_months={inv.dt.to_period('M').nunique() if len(inv) else 0} "
+            f"min={inv.min() if len(inv) else None} max={inv.max() if len(inv) else None}"
         )
-        print(f"[label_counts:{head}] {json.dumps(compact_counts(labelled['Dispute Type']), ensure_ascii=True)}")
-        print(f"[unmatched_counts:{head}] {json.dumps(compact_counts(unmatched['Dispute Type']), ensure_ascii=True)}")
-        print(f"[taxonomy_values:{head}] {json.dumps(sorted(allowed), ensure_ascii=True)}")
-    print(f"[label_coverage] taxonomy_matched_total={eligible_total} analytical_rows={len(analytical)}")
 
-    # Check whether the legacy reason/category field is actually a better supervised target.
-    for candidate in ("Dispute Type", "Reason for Dispute Categoary", "Reason for Dispute Category"):
+    for candidate in ("Dispute Type", "Reason for Dispute Category"):
         candidate_label_diagnostics(analytical, taxonomy, candidate)
+
+    canonical, sources = canonicalize_target_labels(analytical, taxonomy)
+    print(f"[canonical_target] matched_rows={int(canonical.notna().sum())} classes={int(canonical.nunique())}")
+    print(f"[canonical_target] source_counts={sources.value_counts(dropna=False).to_dict()}")
+    for head in ("EB", "DG"):
+        mask = analytical["Expense Nature"].astype(str).str.upper().eq(head)
+        values = canonical[mask].dropna()
+        print(
+            f"[canonical_target:{head}] rows={int(mask.sum())} matched={len(values)} classes={values.nunique()} "
+            f"counts={json.dumps([(str(k), int(v)) for k, v in values.value_counts().items()], ensure_ascii=True)}"
+        )
 
     model = DisputeClassifier(0.60).fit(analytical, taxonomy)
     analyzed = add_anomalies(model.predict(analytical), 0.10)
     status_counts = analyzed["Prediction Status"].value_counts(dropna=False).to_dict()
     print(f"[model] trained_heads={sorted(model.models.keys())}")
+    print(f"[model] label_stats={json.dumps(model.label_stats, default=str, sort_keys=True)}")
+    print(f"[model] unavailable_heads={json.dumps(model.unavailable_heads, default=str, sort_keys=True)}")
     print(f"[model] prediction_status={status_counts}")
     print(f"[model] anomalies={int(analyzed['Is Anomaly'].sum())}")
 
-    try:
-        metrics, _ = evaluate_time_split(analytical, taxonomy, 0.60)
-        print(f"[evaluation] {json.dumps(metrics, default=str, sort_keys=True)}")
-    except Exception as exc:
-        print(f"[evaluation] unavailable={type(exc).__name__}: {exc}")
+    metrics, _ = evaluate_time_split(analytical, taxonomy, 0.60)
+    print(f"[evaluation] {json.dumps(metrics, default=str, sort_keys=True)}")
 
-    # Verify the small processed file can be scored using the labelled raw history.
     processed_analytical = prepare(processed, "model-ready").analytical
     processed_scored = add_anomalies(model.predict(processed_analytical), 0.10)
     processed_status = processed_scored["Prediction Status"].value_counts(dropna=False).to_dict()
