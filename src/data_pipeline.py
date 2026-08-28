@@ -22,10 +22,12 @@ ALIASES = {
     "Debit Amount (Excl tax)": ["debit amount excl tax"],
     "Debit Amount (Incl tax)": ["debit amount incl tax"],
     "Dispute Type": ["dispute type"],
+    "Reason for Dispute Category": ["reason for dispute categoary", "reason for dispute category"],
     "Dispute Head": ["dispute head"],
     "Dispute Sub-Category": ["dispute sub category"],
     "Circle Code": ["circle code"],
     "Vendor Code": ["vendor code"],
+    "IP Category": ["ip category"],
 }
 
 
@@ -118,8 +120,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = _numeric(df[c])
     if "Expense Nature" in df:
         df["Expense Nature"] = df["Expense Nature"].astype("string").str.strip().str.upper()
-    if "Dispute Type" in df:
-        df["Dispute Type"] = df["Dispute Type"].astype("string").str.strip()
+    for c in ["Dispute Type", "Reason for Dispute Category"]:
+        if c in df:
+            df[c] = df[c].astype("string").str.strip()
     return df
 
 
@@ -214,7 +217,7 @@ def merge_network(df: pd.DataFrame, kpi: Optional[pd.DataFrame]) -> pd.DataFrame
     k = clean_data(kpi)
     if not {"IP Site ID", "Month-Year"}.issubset(k.columns):
         return df
-    cols = [c for c in k.columns if c not in {"Expense Nature", "Dispute Type"}]
+    cols = [c for c in k.columns if c not in {"Expense Nature", "Dispute Type", "Reason for Dispute Category"}]
     return df.merge(k[cols].drop_duplicates(["IP Site ID", "Month-Year"]), on=["IP Site ID", "Month-Year"], how="left")
 
 
