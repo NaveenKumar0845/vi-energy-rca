@@ -43,6 +43,28 @@ def compact_counts(series, limit=30):
     return [(str(label), int(count)) for label, count in counts.items()]
 
 
+def candidate_label_diagnostics(analytical, taxonomy, column):
+    if column not in analytical:
+        print(f"[candidate_label:{column}] missing")
+        return
+    total_matched = 0
+    for head in ("EB", "DG"):
+        allowed = set(valid_reasons(taxonomy, head))
+        rows = analytical[analytical["Expense Nature"].astype(str).str.upper().eq(head)]
+        labelled = rows[rows[column].notna()]
+        matched = labelled[labelled[column].astype(str).str.strip().isin(allowed)]
+        unmatched = labelled[~labelled[column].astype(str).str.strip().isin(allowed)]
+        total_matched += len(matched)
+        print(
+            f"[candidate_label:{column}:{head}] labelled={len(labelled)} raw_classes={labelled[column].astype(str).str.strip().nunique()} "
+            f"taxonomy_matched={len(matched)} matched_classes={matched[column].astype(str).str.strip().nunique() if not matched.empty else 0} "
+            f"unmatched_rows={len(unmatched)} unmatched_classes={unmatched[column].astype(str).str.strip().nunique() if not unmatched.empty else 0}"
+        )
+        print(f"[candidate_counts:{column}:{head}] {json.dumps(compact_counts(labelled[column]), ensure_ascii=True)}")
+        print(f"[candidate_unmatched:{column}:{head}] {json.dumps(compact_counts(unmatched[column]), ensure_ascii=True)}")
+    print(f"[candidate_label:{column}] taxonomy_matched_total={total_matched}")
+
+
 def main():
     raw_path = find_raw()
     raw = read_path(raw_path)
@@ -113,6 +135,10 @@ def main():
         print(f"[unmatched_counts:{head}] {json.dumps(compact_counts(unmatched['Dispute Type']), ensure_ascii=True)}")
         print(f"[taxonomy_values:{head}] {json.dumps(sorted(allowed), ensure_ascii=True)}")
     print(f"[label_coverage] taxonomy_matched_total={eligible_total} analytical_rows={len(analytical)}")
+
+    # Check whether the legacy reason/category field is actually a better supervised target.
+    for candidate in ("Dispute Type", "Reason for Dispute Categoary", "Reason for Dispute Category"):
+        candidate_label_diagnostics(analytical, taxonomy, candidate)
 
     model = DisputeClassifier(0.60).fit(analytical, taxonomy)
     analyzed = add_anomalies(model.predict(analytical), 0.10)
