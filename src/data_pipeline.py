@@ -70,13 +70,7 @@ def _numeric(series: pd.Series) -> pd.Series:
 
 
 def _date_series(series: pd.Series) -> pd.Series:
-    """Parse regular dates and Excel serial dates safely.
-
-    XLSB files commonly expose Excel dates as numeric serials. Passing those
-    numbers directly to pd.to_datetime interprets them as Unix nanoseconds and
-    collapses the data around Jan-1970. Excel serials are instead converted
-    from the 1899-12-30 origin.
-    """
+    """Parse ordinary dates plus Excel serial dates emitted by XLSB readers."""
     result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
     numeric = pd.to_numeric(series, errors="coerce")
     excel_mask = numeric.between(20_000, 80_000, inclusive="both")
@@ -168,6 +162,7 @@ def prorate_raw(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
             rec = r.to_dict()
             rec["Month-Year"] = str(period)
             rec["Proration Days"] = days
+            rec["Bill Duration Days"] = total_days
             for src, dst in amounts:
                 value = r.get(src, np.nan)
                 rec[dst] = float(value) * days / total_days if pd.notna(value) else np.nan
@@ -185,6 +180,17 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     x = clean_data(df).copy()
     x["_month"] = pd.to_datetime(x["Month-Year"], errors="coerce")
     x = x.sort_values(["IP Site ID", "Expense Nature", "_month"]).reset_index(drop=True)
+
+    if "Bill Duration Days" not in x and {"Actual Bill From Date", "Actual Bill To Date"}.issubset(x.columns):
+        x["Bill Duration Days"] = (
+            x["Actual Bill To Date"].dt.normalize() - x["Actual Bill From Date"].dt.normalize()
+        ).dt.days + 1
+
+    if "Invoice Date" in x:
+        invoice = pd.to_datetime(x["Invoice Date"], errors="coerce")
+        x["Invoice Month"] = invoice.dt.month
+        x["Invoice Quarter"] = invoice.dt.quarter
+
     g = x.groupby(["IP Site ID", "Expense Nature"], dropna=False)
     bill = "Prorated Billed Amount (Excl GST)"
     prev = g[bill].shift(1)
