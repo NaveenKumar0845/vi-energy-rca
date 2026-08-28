@@ -19,7 +19,7 @@ If evidence is insufficient, explicitly say that the root cause is not establish
 Return concise JSON with barrier_analysis, root_causes, evidence, corrective_actions, risk_level, confidence, additional_data_required."""
 
 
-def _gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
+def _gemini(prompt: str, model: str = "gemini-2.5-flash", json_mode: bool = True) -> str:
     from google import genai
     from google.genai import types
 
@@ -27,14 +27,20 @@ def _gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     if not key:
         raise RuntimeError("GEMINI_API_KEY is not configured")
     client = genai.Client(api_key=key)
-    cfg = types.GenerateContentConfig(temperature=0.15, response_mime_type="application/json")
+    kwargs = {"temperature": 0.15}
+    if json_mode:
+        kwargs["response_mime_type"] = "application/json"
+    cfg = types.GenerateContentConfig(**kwargs)
     response = client.models.generate_content(model=model, contents=prompt, config=cfg)
     return response.text
 
 
-def _ollama(prompt: str, model: str = "phi3:mini") -> str:
+def _ollama(prompt: str, model: str = "phi3:mini", json_mode: bool = True) -> str:
     base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
-    payload = json.dumps({"model": model, "prompt": prompt, "stream": False, "format": "json"}).encode("utf-8")
+    body = {"model": model, "prompt": prompt, "stream": False}
+    if json_mode:
+        body["format"] = "json"
+    payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         f"{base}/api/generate",
         data=payload,
@@ -43,20 +49,25 @@ def _ollama(prompt: str, model: str = "phi3:mini") -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
-            body = json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Ollama is unavailable at {base}: {exc}") from exc
-    text = body.get("response")
+    text = result.get("response")
     if not text:
         raise RuntimeError("Ollama returned an empty response")
     return text
 
 
-def generate_text(prompt: str, model: str, provider: str = "Gemini") -> str:
+def generate_text(
+    prompt: str,
+    model: str,
+    provider: str = "Gemini",
+    json_mode: bool = True,
+) -> str:
     provider = str(provider).strip().lower()
     if provider.startswith("ollama"):
-        return _ollama(prompt, model)
-    return _gemini(prompt, model)
+        return _ollama(prompt, model, json_mode=json_mode)
+    return _gemini(prompt, model, json_mode=json_mode)
 
 
 def _safe(v):
@@ -144,7 +155,7 @@ def rca_for_row(
         f"Evidence:\n{json.dumps(evidence, default=str)}"
     )
     try:
-        parsed = json.loads(generate_text(prompt, model, provider))
+        parsed = json.loads(generate_text(prompt, model, provider, json_mode=True))
     except Exception as exc:
         parsed = {
             "barrier_analysis": [],
@@ -231,12 +242,13 @@ def answer_query(
         record["deterministic_signals"] = derive_business_signals(pd.Series(record))
     prompt = (
         "Answer the user's question using only the supplied structured telecom energy/billing evidence. "
-        "Do not convert correlation into causation. If the evidence is insufficient, say so.\n"
+        "Do not convert correlation into causation. If the evidence is insufficient, say so. "
+        "Keep the answer concise and separate observations from interpretation.\n"
         f"Question: {question}\n"
         f"Detected filters: {notes}\n"
         f"Rows: {json.dumps(records, default=str)}"
     )
     try:
-        return generate_text(prompt, model, provider)
+        return generate_text(prompt, model, provider, json_mode=False)
     except Exception as exc:
         return f"GenAI unavailable: {exc}"
