@@ -69,6 +69,33 @@ def _numeric(series: pd.Series) -> pd.Series:
     return out
 
 
+def _date_series(series: pd.Series) -> pd.Series:
+    """Parse regular dates and Excel serial dates safely.
+
+    XLSB files commonly expose Excel dates as numeric serials. Passing those
+    numbers directly to pd.to_datetime interprets them as Unix nanoseconds and
+    collapses the data around Jan-1970. Excel serials are instead converted
+    from the 1899-12-30 origin.
+    """
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    numeric = pd.to_numeric(series, errors="coerce")
+    excel_mask = numeric.between(20_000, 80_000, inclusive="both")
+    if excel_mask.any():
+        result.loc[excel_mask] = pd.to_datetime(
+            numeric.loc[excel_mask], unit="D", origin="1899-12-30", errors="coerce"
+        )
+
+    remaining = result.isna() & series.notna()
+    if remaining.any():
+        result.loc[remaining] = pd.to_datetime(
+            series.loc[remaining].astype("string").str.strip(),
+            errors="coerce",
+            format="mixed",
+            dayfirst=False,
+        )
+    return result
+
+
 def _month_year(series: pd.Series) -> pd.Series:
     s = series.astype("string").str.strip()
     parsed = pd.to_datetime(s, format="%b-%y", errors="coerce")
@@ -82,7 +109,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     df = canonicalize_columns(df)
     for c in ["Actual Bill From Date", "Actual Bill To Date", "Invoice Date"]:
         if c in df:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
+            df[c] = _date_series(df[c])
     if "Month-Year" in df:
         df["Month-Year"] = _month_year(df["Month-Year"])
     for c in [
