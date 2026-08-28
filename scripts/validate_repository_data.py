@@ -38,6 +38,11 @@ def print_schema(label, path, df):
     print(f"[{label}] columns={list(df.columns)}")
 
 
+def compact_counts(series, limit=30):
+    counts = series.dropna().astype(str).str.strip().value_counts().head(limit)
+    return [(str(label), int(count)) for label, count in counts.items()]
+
+
 def main():
     raw_path = find_raw()
     raw = read_path(raw_path)
@@ -96,11 +101,17 @@ def main():
         head_rows = analytical[analytical["Expense Nature"].astype(str).str.upper().eq(head)]
         labelled = head_rows[head_rows["Dispute Type"].notna()] if "Dispute Type" in head_rows else head_rows.iloc[0:0]
         eligible = labelled[labelled["Dispute Type"].isin(allowed)]
+        unmatched = labelled[~labelled["Dispute Type"].isin(allowed)]
         eligible_total += len(eligible)
         print(
             f"[label_coverage:{head}] rows={len(head_rows)} labelled={len(labelled)} "
-            f"taxonomy_matched={len(eligible)} matched_classes={eligible['Dispute Type'].nunique() if not eligible.empty else 0}"
+            f"taxonomy_matched={len(eligible)} matched_classes={eligible['Dispute Type'].nunique() if not eligible.empty else 0} "
+            f"raw_classes={labelled['Dispute Type'].nunique() if not labelled.empty else 0} unmatched_rows={len(unmatched)} "
+            f"unmatched_classes={unmatched['Dispute Type'].nunique() if not unmatched.empty else 0}"
         )
+        print(f"[label_counts:{head}] {json.dumps(compact_counts(labelled['Dispute Type']), ensure_ascii=True)}")
+        print(f"[unmatched_counts:{head}] {json.dumps(compact_counts(unmatched['Dispute Type']), ensure_ascii=True)}")
+        print(f"[taxonomy_values:{head}] {json.dumps(sorted(allowed), ensure_ascii=True)}")
     print(f"[label_coverage] taxonomy_matched_total={eligible_total} analytical_rows={len(analytical)}")
 
     model = DisputeClassifier(0.60).fit(analytical, taxonomy)
