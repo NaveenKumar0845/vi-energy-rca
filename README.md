@@ -1,77 +1,110 @@
 # Vi Energy, Billing Dispute & GenAI RCA
 
-A cloud-ready Streamlit pilot for telecom site billing dispute prediction, anomaly detection and evidence-grounded root-cause analysis.
+Interview-safe reconstruction of a Vodafone Idea telecom energy and billing dispute RCA pilot. The repository contains **code, architecture documentation and synthetic demo data only**; proprietary Vi workbooks are not required for the public demo.
 
-> **Important data-safety note:** this GitHub repository is currently **public**. The code and synthetic demo are safe to publish, but do **not** upload real Vodafone Idea workbooks until you change the repository to **private**.
+## What the project solves
 
-## Architecture
+Telecom site bills can contain EB/DG disputes caused by abnormal consumption, incorrect rates or ratios, duplicate/retro billing, locked or non-radiating sites and other business exceptions. The pilot turns site billing history into a consistent site-month analytical layer, predicts likely dispute reasons, flags unusual billing behavior and gives an LLM a grounded evidence package for barrier analysis, root-cause hypotheses and corrective actions.
+
+## End-to-end flow
 
 ```text
-Raw billing/dispute workbook
-        ↓
-Header/date/amount validation
-        ↓
-Inclusive-day monthly proration
-        ↓
-Site × month feature engineering
-        ↓
-┌────────────────────────────┐
-│ Hierarchical Random Forest │  EB → only EB reasons
-│ Isolation Forest           │  DG → only DG reasons
-└─────────────┬──────────────┘
-              ↓
-      Structured evidence
-              ↓
-        Gemini GenAI RCA
-              ↓
-Barrier → Root Cause → Corrective Action
-              ↓
-        Streamlit dashboard
+Billing / dispute data
+        +
+Approved EB/DG taxonomy
+        +
+Optional network KPI evidence
+        |
+        v
+Data validation & normalization
+        |
+        v
+Monthly proration
+        |
+        v
+Leakage-aware feature engineering
+        |
+   +----+-------------------+
+   |                        |
+   v                        v
+EB/DG Random Forest    Isolation Forest
+   |                        |
+   +------------+-----------+
+                |
+                v
+      Deterministic evidence
+                |
+                v
+         GenAI RCA layer
+     Gemini cloud / Ollama local
+                |
+                v
+       Streamlit dashboard
+                |
+                v
+       Human review / export
 ```
 
-The solution does **not** claim a 5G/network root cause unless an optional network KPI file is supplied.
+## Key engineering decisions
 
-## Upload these files after making the repository private
+- raw `.xlsx`, `.xls`, `.xlsb` and `.csv` ingestion;
+- inclusive-day monthly proration of billed and debit amounts;
+- site-history features using only prior observations;
+- canonical historical-label mapping to the approved dispute taxonomy;
+- separate EB and DG classifiers so predictions cannot cross business taxonomies;
+- confidence threshold with `Manual Review Required` instead of forced predictions;
+- multivariate Isolation Forest anomaly detection;
+- deterministic billing/network evidence signals before LLM reasoning;
+- evidence-grounded RCA with explicit hallucination guardrails;
+- query-specific structured retrieval instead of sending random rows to the LLM;
+- optional local Ollama support to mirror the original pilot style and Gemini support for Streamlit Community Cloud;
+- optional FastAPI service for a production-oriented serving pattern.
 
-| File | Exact GitHub path | Purpose |
-|---|---|---|
-| `Dispute_Head_UPE_Indus_jan23toDec23.xlsx` | `data/raw/Dispute_Head_UPE_Indus_jan23toDec23.xlsx` | Raw labelled historical billing/dispute data |
-| `Dispute reasons.xlsx` | `data/reference/dispute_reasons.xlsx` | EB/DG dispute taxonomy |
-| `filtered_data.xlsx` | `data/processed/filtered_data.xlsx` | Existing model-ready/prorated dataset |
-| `network_kpis.xlsx` | `data/network/network_kpis.xlsx` | Optional network/5G KPI evidence |
+## Public repository data policy
 
-The repository already contains a CSV copy of the EB/DG taxonomy for the demo.
+Real customer/company workbooks are intentionally excluded. `.gitignore` blocks raw, processed and network data files from being committed.
 
-## What was fixed from the original prototype
+Use one of three modes in the Streamlit app:
 
-- implemented the missing raw → monthly proration transformation;
-- preserved `Dispute Type` as the supervised target;
-- engineered prior-history features instead of treating site IDs as meaningful numbers;
-- separated EB and DG candidate reason spaces;
-- removed random prediction fallback and added `Manual Review Required` for low confidence;
-- moved anomaly detection from a single billing amount to multivariate billing/history features;
-- added chronological evaluation to reduce leakage;
-- replaced five-random-row chat context with query-specific structured retrieval;
-- constrained GenAI RCA to supplied evidence and forbids unsupported 5G/network claims;
-- supports Gemini API for Streamlit Community Cloud without committing secrets.
+1. **Synthetic demo** — default and safe for GitHub/Streamlit Cloud.
+2. **Upload files** — analyze a file for the current Streamlit session.
+3. **Private/local data** — use untracked workbooks on a local clone.
 
-## Deploy on Streamlit Community Cloud
+The public synthetic generator mirrors the *schema and analytical behavior* of the pilot without containing Vi site IDs, invoices, vendors or financial records.
 
-Use:
+## Project documentation
 
-- Repository: `NaveenKumar0845/vi-energy-rca`
-- Branch: `main`
-- Main file path: `streamlit_app.py`
+- `docs/ARCHITECTURE.md` — pilot architecture, data sources, APIs and production reference design.
+- `docs/DATA_CONTRACT.md` — source schemas, joins, data quality and privacy rules.
+- `docs/INTERVIEW_GUIDE.md` — 30-second, 90-second and deep-dive interview explanations plus difficult Q&A.
 
-In **App settings → Secrets**, add:
+## Repository structure
 
-```toml
-GEMINI_API_KEY="your-key"
+```text
+vi-energy-rca/
+├── streamlit_app.py
+├── api/
+│   └── main.py
+├── src/
+│   ├── data_pipeline.py
+│   ├── demo_data.py
+│   ├── models.py
+│   ├── business_rules.py
+│   ├── genai.py
+│   ├── io_utils.py
+│   └── visuals.py
+├── data/
+│   ├── raw/          # private/untracked
+│   ├── processed/    # private/untracked
+│   ├── network/      # private/untracked
+│   └── reference/    # safe taxonomy CSV
+├── docs/
+├── scripts/
+├── tests/
+└── requirements.txt
 ```
 
-Never add the real key to GitHub.
-
-## Local run
+## Run the Streamlit app
 
 ```bash
 python -m venv .venv
@@ -81,23 +114,61 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-The default **Synthetic demo** runs without proprietary data. The ML/anomaly tabs work without an API key; the GenAI RCA/chat tabs require `GEMINI_API_KEY`.
+The ML and anomaly views run without an API key.
 
-## Input notes
+### Gemini on Streamlit Community Cloud
 
-### Raw billing workbook
-Required minimum fields are `IP Site ID`, bill from/to dates, expense nature, and billed amount. Keeping the real `Dispute Type` is required for supervised training/evaluation.
+Deploy with:
 
-### Processed workbook
-Expected minimum fields are `IP Site ID`, `Expense Nature`, `Month-Year`, and `Prorated Billed Amount (Excl GST)`.
+- Repository: `NaveenKumar0845/vi-energy-rca`
+- Branch: `main`
+- Main file path: `streamlit_app.py`
 
-### Network KPI workbook
-If supplied, it can include RSRP, RSRQ, SINR, DL/UL throughput, PRB utilization, availability and alarm count. Engineering thresholds should be Vi-approved before any production claim.
+Add only in **App settings → Secrets**:
 
-## Tests
+```toml
+GEMINI_API_KEY="your-key"
+```
+
+### Ollama for local pilot-style testing
+
+```bash
+ollama pull phi3:mini
+ollama serve
+streamlit run streamlit_app.py
+```
+
+Then choose **Ollama (local pilot)** in the sidebar.
+
+## Optional API service
+
+```bash
+uvicorn api.main:app --reload
+```
+
+Representative endpoints:
+
+```text
+GET /health
+GET /demo/summary
+GET /demo/sites/{site_id}
+```
+
+The API uses synthetic data by design. In a production implementation it would sit behind authentication and connect to governed data/model services.
+
+## Tests and CI
 
 ```bash
 pytest -q
+python scripts/validate_repository_data.py
 ```
 
-The tests cover cross-month proration/reconciliation, leakage-aware historical features, EB/DG prediction guardrails, and anomaly-output creation.
+CI validates the synthetic end-to-end path so the project remains runnable without proprietary data.
+
+## Important scope distinction
+
+The implemented/reconstructed pilot is fundamentally an **energy and billing dispute RCA platform**. Network KPI evidence can be joined as an extension, but the billing dataset alone should not be presented as a complete 5G RF-performance optimization system.
+
+A good interview title is:
+
+**GenAI-Powered Telecom Energy & Billing Dispute RCA Platform**
