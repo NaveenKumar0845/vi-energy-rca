@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -31,22 +32,26 @@ def discover_raw_file() -> Path:
     candidates = []
     for pattern in ("*.xlsb", "*.xlsx", "*.xls", "*.csv"):
         candidates.extend(sorted(RAW_DIR.glob(pattern)))
-    if candidates:
-        return candidates[0]
-    return preferred[0]
+    return candidates[0] if candidates else preferred[0]
 
 
 RAW = discover_raw_file()
 
 st.set_page_config(page_title="Vi Energy & Billing Dispute RCA", page_icon="⚡", layout="wide")
-st.markdown("<style>h1,h2,h3{color:#e60000}.stButton>button{background:#e60000;color:white}</style>", unsafe_allow_html=True)
+st.markdown(
+    "<style>h1,h2,h3{color:#e60000}.stButton>button{background:#e60000;color:white}</style>",
+    unsafe_allow_html=True,
+)
 
 
-def get_secret():
+def load_secrets():
     try:
         key = st.secrets.get("GEMINI_API_KEY")
         if key:
             os.environ["GEMINI_API_KEY"] = str(key)
+        ollama_url = st.secrets.get("OLLAMA_BASE_URL")
+        if ollama_url:
+            os.environ["OLLAMA_BASE_URL"] = str(ollama_url)
     except Exception:
         pass
 
@@ -60,23 +65,43 @@ def load_tax(upload=None):
 
 
 def main():
-    get_secret()
+    load_secrets()
     st.title("⚡ Vi Energy, Billing Dispute & GenAI RCA")
-    st.caption("Raw billing → monthly proration → leakage-aware features → EB/DG dispute ML → multivariate anomaly detection → evidence-grounded RCA")
+    st.caption(
+        "Interview-safe pilot reconstruction: raw billing → proration → leakage-aware features → "
+        "EB/DG dispute prediction → anomaly detection → evidence-grounded GenAI RCA"
+    )
+    st.info(
+        "This public demo runs on synthetic data by default. Proprietary Vi workbooks are not required or stored in the repository."
+    )
 
     with st.sidebar:
         st.header("Run configuration")
-        source = st.radio("Data source", ["Synthetic demo", "Repository data", "Upload files"])
-        repo_file = st.selectbox("Repository billing file", ["Raw dispute history", "Existing filtered_data"], disabled=source != "Repository data")
+        source = st.radio("Data source", ["Synthetic demo", "Upload files", "Private/local data"])
+        local_file = st.selectbox(
+            "Private/local billing file",
+            ["Raw dispute history", "Existing filtered_data"],
+            disabled=source != "Private/local data",
+        )
         conf = st.slider("Prediction confidence", 0.30, 0.95, 0.60, 0.05)
         contamination = st.slider("Expected anomaly rate", 0.01, 0.30, 0.10, 0.01)
-        model_name = st.text_input("Gemini model", "gemini-2.5-flash")
+
+        provider = st.selectbox("GenAI runtime", ["Gemini (cloud)", "Ollama (local pilot)"])
+        default_model = "gemini-2.5-flash" if provider.startswith("Gemini") else "phi3:mini"
+        model_name = st.text_input("LLM model", default_model)
+
         uploaded = training_upload = tax_upload = kpi_upload = None
         if source == "Upload files":
             uploaded = st.file_uploader("Billing/dispute file", type=["xlsx", "xls", "xlsb", "csv"])
-            training_upload = st.file_uploader("Optional separate labelled training file", type=["xlsx", "xls", "xlsb", "csv"])
-            tax_upload = st.file_uploader("Optional dispute reasons master", type=["xlsx", "xls", "xlsb", "csv"])
-            kpi_upload = st.file_uploader("Optional network KPI file", type=["xlsx", "xls", "xlsb", "csv"])
+            training_upload = st.file_uploader(
+                "Optional separate labelled training file", type=["xlsx", "xls", "xlsb", "csv"]
+            )
+            tax_upload = st.file_uploader(
+                "Optional dispute reasons master", type=["xlsx", "xls", "xlsb", "csv"]
+            )
+            kpi_upload = st.file_uploader(
+                "Optional network KPI file", type=["xlsx", "xls", "xlsb", "csv"]
+            )
 
     if source == "Upload files" and uploaded is None:
         st.info("Upload a billing file, or switch to Synthetic demo.")
@@ -88,14 +113,20 @@ def main():
             raw = demo_raw()
             network = demo_kpis()
             mode = "raw"
-        elif source == "Repository data":
+        elif source == "Private/local data":
             network = read_path(KPI_XLSX) if KPI_XLSX.exists() else None
-            if repo_file == "Raw dispute history":
+            if local_file == "Raw dispute history":
                 if not RAW.exists():
-                    raise FileNotFoundError(f"No raw billing workbook found in {RAW_DIR}")
+                    raise FileNotFoundError(
+                        "No private raw workbook is present. Keep it outside Git or use Upload files."
+                    )
                 raw = read_path(RAW)
                 mode = "raw"
             else:
+                if not FILTERED.exists():
+                    raise FileNotFoundError(
+                        "No private filtered_data.xlsx is present. Keep it outside Git or use Upload files."
+                    )
                 raw = read_path(FILTERED)
                 mode = "model-ready"
                 if RAW.exists():
@@ -124,42 +155,89 @@ def main():
     c4.metric("Anomalies", int(analyzed["Is Anomaly"].sum()))
 
     tabs = st.tabs(["📊 Data", "🎯 Prediction", "🚨 Anomalies", "📈 Evaluation", "🧠 RCA", "💬 Chat"])
+
     with tabs[0]:
         st.write(f"Detected input mode: **{p.mode}**")
-        if source == "Repository data":
-            st.caption(f"Repository file: `{RAW.relative_to(ROOT) if repo_file == 'Raw dispute history' else FILTERED.relative_to(ROOT)}`")
+        if source == "Synthetic demo":
+            st.caption("Dataset: generated synthetic telecom site/billing/dispute records; no Vi production data.")
         if not p.rejected.empty:
             st.warning(f"Rejected raw rows: {len(p.rejected)}")
         st.plotly_chart(monthly_billing(analyzed), use_container_width=True)
         st.dataframe(analyzed.head(250), use_container_width=True)
+
     with tabs[1]:
-        cols = [c for c in ["IP Site ID", "Month-Year", "Expense Nature", "Prorated Billed Amount (Excl GST)", "Predicted Dispute Type", "Prediction Confidence", "Second Candidate", "Prediction Status"] if c in analyzed]
+        cols = [
+            c
+            for c in [
+                "IP Site ID",
+                "Month-Year",
+                "Expense Nature",
+                "Prorated Billed Amount (Excl GST)",
+                "Predicted Dispute Type",
+                "Prediction Confidence",
+                "Second Candidate",
+                "Second Candidate Confidence",
+                "Prediction Status",
+            ]
+            if c in analyzed
+        ]
         st.plotly_chart(disputes(analyzed), use_container_width=True)
         st.dataframe(analyzed[cols], use_container_width=True)
-        st.caption("Low-confidence predictions are routed to Manual Review Required; invalid predictions are never replaced randomly.")
+        st.caption(
+            "EB and DG use separate reason spaces. Low-confidence cases go to Manual Review Required; no random fallback is used."
+        )
+
     with tabs[2]:
         st.plotly_chart(anomalies(analyzed), use_container_width=True)
         a = analyzed[analyzed["Is Anomaly"]].sort_values("Anomaly Percentile", ascending=False)
-        st.dataframe(a[[c for c in ["IP Site ID", "Month-Year", "Expense Nature", "Prorated Billed Amount (Excl GST)", "Anomaly Percentile", "Anomaly Evidence", "Predicted Dispute Type"] if c in a]], use_container_width=True)
+        st.dataframe(
+            a[
+                [
+                    c
+                    for c in [
+                        "IP Site ID",
+                        "Month-Year",
+                        "Expense Nature",
+                        "Prorated Billed Amount (Excl GST)",
+                        "Anomaly Percentile",
+                        "Anomaly Evidence",
+                        "Predicted Dispute Type",
+                    ]
+                    if c in a
+                ]
+            ],
+            use_container_width=True,
+        )
+
     with tabs[3]:
-        if "Dispute Type" in df and df["Dispute Type"].notna().any():
+        if any(c in df for c in ["Reason for Dispute Category", "Dispute Type"]):
             if st.button("Run chronological evaluation"):
                 metrics, pred = evaluate_time_split(df, taxonomy, conf)
                 st.json(metrics)
-                st.dataframe(pred.head(100), use_container_width=True)
+                if not pred.empty:
+                    st.dataframe(pred.head(100), use_container_width=True)
         else:
-            st.info("Actual Dispute Type labels are required for evaluation.")
+            st.info("A historical dispute label is required for supervised evaluation.")
+
     with tabs[4]:
-        idx = st.selectbox("Select row", analyzed.index.tolist(), format_func=lambda i: f"{analyzed.loc[i, 'IP Site ID']} | {analyzed.loc[i, 'Month-Year']} | {analyzed.loc[i, 'Expense Nature']}")
+        idx = st.selectbox(
+            "Select row",
+            analyzed.index.tolist(),
+            format_func=lambda i: (
+                f"{analyzed.loc[i, 'IP Site ID']} | {analyzed.loc[i, 'Month-Year']} | "
+                f"{analyzed.loc[i, 'Expense Nature']}"
+            ),
+        )
         st.json({k: str(v) for k, v in analyzed.loc[idx].to_dict().items() if pd.notna(v)})
         if st.button("Generate grounded RCA"):
             with st.spinner("Generating RCA..."):
-                st.json(rca_for_row(analyzed.loc[idx], taxonomy, model_name))
+                st.json(rca_for_row(analyzed.loc[idx], taxonomy, model_name, provider))
+
     with tabs[5]:
         q = st.text_input("Ask about a site, month, EB/DG dispute or anomaly")
         if st.button("Ask") and q:
             with st.spinner("Retrieving relevant structured rows..."):
-                st.write(answer_query(q, analyzed, model_name))
+                st.write(answer_query(q, analyzed, model_name, provider))
 
     st.divider()
     st.download_button(
