@@ -1,13 +1,20 @@
 from __future__ import annotations
+import json
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data_pipeline import is_model_ready, prorate_raw
+from src.data_pipeline import is_model_ready, prepare, prorate_raw
 from src.io_utils import read_path
-from src.models import prepare_taxonomy
+from src.models import (
+    DisputeClassifier,
+    add_anomalies,
+    evaluate_time_split,
+    prepare_taxonomy,
+    valid_reasons,
+)
 
 RAW_DIR = ROOT / "data/raw"
 PROCESSED = ROOT / "data/processed/filtered_data.xlsx"
@@ -57,9 +64,9 @@ def main():
     print(f"[raw] smoke_proration_output_rows={len(prorated)}")
     print(f"[raw] smoke_proration_rejected_rows={len(rejected)}")
 
-    taxonomy = read_path(TAXONOMY)
-    print_schema("taxonomy", TAXONOMY, taxonomy)
-    taxonomy = prepare_taxonomy(taxonomy)
+    taxonomy_raw = read_path(TAXONOMY)
+    print_schema("taxonomy", TAXONOMY, taxonomy_raw)
+    taxonomy = prepare_taxonomy(taxonomy_raw)
     print(f"[taxonomy] heads={sorted(taxonomy['Dispute Head'].dropna().astype(str).unique().tolist())}")
     print(f"[taxonomy] reasons={len(taxonomy)}")
 
@@ -75,7 +82,47 @@ def main():
     overlap = len(raw_sites & processed_sites)
     denominator = max(len(processed_sites), 1)
     print(f"[crosscheck] raw_sites={len(raw_sites)} processed_sites={len(processed_sites)} overlap_sites={overlap} overlap_pct={overlap/denominator:.1%}")
-    print("Repository data validation completed successfully.")
+
+    # Full real-data pipeline validation. Output only aggregate metrics; never print row-level data.
+    prepared = prepare(raw, "raw")
+    analytical = prepared.analytical
+    print(f"[full_pipeline] analytical_rows={len(analytical)}")
+    print(f"[full_pipeline] rejected_rows={len(prepared.rejected)}")
+    print(f"[full_pipeline] months={analytical['Month-Year'].nunique()}")
+
+    eligible_total = 0
+    for head in ("EB", "DG"):
+        allowed = set(valid_reasons(taxonomy, head))
+        head_rows = analytical[analytical["Expense Nature"].astype(str).str.upper().eq(head)]
+        labelled = head_rows[head_rows["Dispute Type"].notna()] if "Dispute Type" in head_rows else head_rows.iloc[0:0]
+        eligible = labelled[labelled["Dispute Type"].isin(allowed)]
+        eligible_total += len(eligible)
+        print(
+            f"[label_coverage:{head}] rows={len(head_rows)} labelled={len(labelled)} "
+            f"taxonomy_matched={len(eligible)} matched_classes={eligible['Dispute Type'].nunique() if not eligible.empty else 0}"
+        )
+    print(f"[label_coverage] taxonomy_matched_total={eligible_total} analytical_rows={len(analytical)}")
+
+    model = DisputeClassifier(0.60).fit(analytical, taxonomy)
+    analyzed = add_anomalies(model.predict(analytical), 0.10)
+    status_counts = analyzed["Prediction Status"].value_counts(dropna=False).to_dict()
+    print(f"[model] trained_heads={sorted(model.models.keys())}")
+    print(f"[model] prediction_status={status_counts}")
+    print(f"[model] anomalies={int(analyzed['Is Anomaly'].sum())}")
+
+    try:
+        metrics, _ = evaluate_time_split(analytical, taxonomy, 0.60)
+        print(f"[evaluation] {json.dumps(metrics, default=str, sort_keys=True)}")
+    except Exception as exc:
+        print(f"[evaluation] unavailable={type(exc).__name__}: {exc}")
+
+    # Verify the small processed file can be scored using the labelled raw history.
+    processed_analytical = prepare(processed, "model-ready").analytical
+    processed_scored = add_anomalies(model.predict(processed_analytical), 0.10)
+    processed_status = processed_scored["Prediction Status"].value_counts(dropna=False).to_dict()
+    print(f"[processed_scoring] rows={len(processed_scored)} prediction_status={processed_status} anomalies={int(processed_scored['Is Anomaly'].sum())}")
+
+    print("Repository data and end-to-end ML validation completed successfully.")
 
 
 if __name__ == "__main__":
