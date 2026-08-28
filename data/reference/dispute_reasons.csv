@@ -1,0 +1,41 @@
+Dispute Head,Dispute Sub-Category
+EB,High EB Consumption
+EB,Solar Sites
+EB,I2C
+EB,Incorrect EB Tariffs
+EB,Incorrect / High DC ratio
+EB,Sites where VIL not present (Including Site Exited but billed)
+EB,Duplicate/Retro Billing
+EB,ID / OD Dispute (Including FCU Dispute)
+EB,Incorrect Tenancy
+EB,DC Meter Penalty
+EB,Site Locked / switch-off Billing
+EB,Supporting not provided
+EB,Billing prior to 6 Months
+EB,CABEX / Additional Nodes Related Dispute
+EB,Not part of BCC
+EB,Other (Please provide comment under separate Column)
+EB,SLA
+EB,Non Active Non Radiating site
+EB,Disputes related to provisional billing
+EB,Repeater site billed as normal
+DG,High DG Consumption
+DG,Incorrect / negative / High DG run hour
+DG,Solar Sites
+DG,Incorrect DG Rate
+DG,Incorrect / High DC ratio
+DG,Sites where VIL not present (Including Site Exited but billed)
+DG,Duplicate/Retro Billing
+DG,ID / OD Dispute (Including FCU Dispute)
+DG,Incorrect Tenancy
+DG,DC Meter Penalty
+DG,Site Locked / switch-off Billing
+DG,Supporting not provided
+DG,Billing prior to 6 Months
+DG,CABEX / Additional Nodes Related Dispute
+DG,Not part of BCC
+DG,Other (Please provide comment under separate Column)
+DG,Non Active Non Radiating site
+DG,Disputes related to provisional billing
+DG,DEP sites
+DG,Repeater site billed as normal
