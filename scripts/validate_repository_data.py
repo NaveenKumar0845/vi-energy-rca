@@ -6,155 +6,77 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data_pipeline import is_model_ready, prepare, prorate_raw
+from src.data_pipeline import prepare, prorate_raw
+from src.demo_data import demo_raw, demo_kpis
 from src.io_utils import read_path
-from src.models import (
-    DisputeClassifier,
-    add_anomalies,
-    canonicalize_target_labels,
-    evaluate_time_split,
-    prepare_taxonomy,
-    valid_reasons,
-)
+from src.models import DisputeClassifier, add_anomalies, evaluate_time_split, prepare_taxonomy
 
 RAW_DIR = ROOT / "data/raw"
 PROCESSED = ROOT / "data/processed/filtered_data.xlsx"
-TAXONOMY = ROOT / "data/reference/dispute_reasons.xlsx"
+TAX_XLSX = ROOT / "data/reference/dispute_reasons.xlsx"
+TAX_CSV = ROOT / "data/reference/dispute_reasons.csv"
 
 
-def find_raw() -> Path:
-    preferred = RAW_DIR / "Dispute_Head_UPE_Indus_Jan23toDec23.xlsb"
-    if preferred.exists():
-        return preferred
+def find_private_raw():
     for pattern in ("*.xlsb", "*.xlsx", "*.xls", "*.csv"):
         files = sorted(RAW_DIR.glob(pattern))
         if files:
             return files[0]
-    raise FileNotFoundError("No raw workbook found under data/raw")
+    return None
 
 
-def print_schema(label, path, df):
-    print(f"[{label}] file={path.relative_to(ROOT)}")
-    print(f"[{label}] shape={df.shape}")
-    print(f"[{label}] columns={list(df.columns)}")
+def load_taxonomy():
+    path = TAX_XLSX if TAX_XLSX.exists() else TAX_CSV
+    return prepare_taxonomy(read_path(path)), path
 
 
-def compact_counts(series, limit=30):
-    counts = series.dropna().astype(str).str.strip().value_counts().head(limit)
-    return [(str(label), int(count)) for label, count in counts.items()]
+def validate_dataset(label, raw, taxonomy, network=None):
+    sample = raw.head(min(len(raw), 250)).copy()
+    prorated, rejected = prorate_raw(sample)
+    print(f"[{label}] raw_rows={len(raw)} smoke_prorated_rows={len(prorated)} rejected={len(rejected)}")
 
+    prepared = prepare(raw, "raw", network)
+    analytical = prepared.analytical
+    model = DisputeClassifier(0.60).fit(analytical, taxonomy)
+    analyzed = add_anomalies(model.predict(analytical), 0.10)
+    metrics, _ = evaluate_time_split(analytical, taxonomy, 0.60)
 
-def candidate_label_diagnostics(analytical, taxonomy, column):
-    if column not in analytical:
-        print(f"[candidate_label:{column}] missing")
-        return
-    total_matched = 0
-    for head in ("EB", "DG"):
-        allowed = set(valid_reasons(taxonomy, head))
-        rows = analytical[analytical["Expense Nature"].astype(str).str.upper().eq(head)]
-        labelled = rows[rows[column].notna()]
-        matched = labelled[labelled[column].astype(str).str.strip().isin(allowed)]
-        unmatched = labelled[~labelled[column].astype(str).str.strip().isin(allowed)]
-        total_matched += len(matched)
-        print(
-            f"[candidate_label:{column}:{head}] labelled={len(labelled)} raw_classes={labelled[column].astype(str).str.strip().nunique()} "
-            f"taxonomy_matched={len(matched)} matched_classes={matched[column].astype(str).str.strip().nunique() if not matched.empty else 0} "
-            f"unmatched_rows={len(unmatched)} unmatched_classes={unmatched[column].astype(str).str.strip().nunique() if not unmatched.empty else 0}"
-        )
-        print(f"[candidate_counts:{column}:{head}] {json.dumps(compact_counts(labelled[column]), ensure_ascii=True)}")
-        print(f"[candidate_unmatched:{column}:{head}] {json.dumps(compact_counts(unmatched[column]), ensure_ascii=True)}")
-    print(f"[candidate_label:{column}] taxonomy_matched_total={total_matched}")
+    print(f"[{label}] analytical_rows={len(analytical)} sites={analytical['IP Site ID'].nunique()}")
+    print(f"[{label}] trained_heads={sorted(model.models.keys())}")
+    print(f"[{label}] label_stats={json.dumps(model.label_stats, default=str, sort_keys=True)}")
+    print(f"[{label}] anomalies={int(analyzed['Is Anomaly'].sum())}")
+    print(f"[{label}] evaluation={json.dumps(metrics, default=str, sort_keys=True)}")
+
+    assert set(model.models) == {"EB", "DG"}, f"{label}: both EB and DG demo classifiers must train"
+    assert len(analyzed) == len(analytical)
+    assert "Predicted Dispute Type" in analyzed
+    assert "Is Anomaly" in analyzed
 
 
 def main():
-    raw_path = find_raw()
-    raw = read_path(raw_path)
-    print_schema("raw", raw_path, raw)
+    taxonomy, taxonomy_path = load_taxonomy()
+    print(f"[taxonomy] file={taxonomy_path.relative_to(ROOT)} rows={len(taxonomy)}")
 
-    raw_required = {
-        "IP Site ID",
-        "Expense Nature",
-        "Actual Bill From Date",
-        "Actual Bill To Date",
-        "Billed Amount (Excl GST)",
-    }
-    raw_missing = sorted(raw_required - set(raw.columns))
-    print(f"[raw] missing_required={raw_missing}")
-    print(f"[raw] has_dispute_type={'Dispute Type' in raw.columns}")
-    if "Dispute Type" in raw.columns:
-        print(f"[raw] labelled_rows={int(raw['Dispute Type'].notna().sum())}")
-    if raw_missing:
-        raise AssertionError(f"Raw workbook missing required canonical columns: {raw_missing}")
+    # Public CI always validates a fully synthetic, interview-safe end-to-end path.
+    validate_dataset("synthetic_demo", demo_raw(), taxonomy, demo_kpis())
 
-    sample = raw.head(min(len(raw), 250)).copy()
-    prorated, rejected = prorate_raw(sample)
-    print(f"[raw] smoke_proration_input_rows={len(sample)}")
-    print(f"[raw] smoke_proration_output_rows={len(prorated)}")
-    print(f"[raw] smoke_proration_rejected_rows={len(rejected)}")
+    # Optional: when a developer has private/untracked files locally, validate them too.
+    private_raw = find_private_raw()
+    if private_raw is not None:
+        print(f"[private_data] optional raw file detected: {private_raw.name}")
+        private = read_path(private_raw)
+        prepared = prepare(private, "raw")
+        print(f"[private_data] analytical_rows={len(prepared.analytical)} rejected={len(prepared.rejected)}")
+    else:
+        print("[private_data] not present; expected for the public repository")
 
-    taxonomy_raw = read_path(TAXONOMY)
-    print_schema("taxonomy", TAXONOMY, taxonomy_raw)
-    taxonomy = prepare_taxonomy(taxonomy_raw)
-    print(f"[taxonomy] heads={sorted(taxonomy['Dispute Head'].dropna().astype(str).unique().tolist())}")
-    print(f"[taxonomy] reasons={len(taxonomy)}")
+    if PROCESSED.exists():
+        processed = read_path(PROCESSED)
+        print(f"[private_processed] optional rows={len(processed)}")
+    else:
+        print("[private_processed] not present; expected for the public repository")
 
-    processed = read_path(PROCESSED)
-    print_schema("processed", PROCESSED, processed)
-    print(f"[processed] model_ready={is_model_ready(processed)}")
-    print(f"[processed] has_dispute_type={'Dispute Type' in processed.columns}")
-    if not is_model_ready(processed):
-        raise AssertionError("filtered_data.xlsx does not satisfy the model-ready schema")
-
-    raw_sites = set(raw["IP Site ID"].dropna().astype(str))
-    processed_sites = set(processed["IP Site ID"].dropna().astype(str))
-    overlap = len(raw_sites & processed_sites)
-    denominator = max(len(processed_sites), 1)
-    print(f"[crosscheck] raw_sites={len(raw_sites)} processed_sites={len(processed_sites)} overlap_sites={overlap} overlap_pct={overlap/denominator:.1%}")
-
-    prepared = prepare(raw, "raw")
-    analytical = prepared.analytical
-    print(f"[full_pipeline] analytical_rows={len(analytical)}")
-    print(f"[full_pipeline] rejected_rows={len(prepared.rejected)}")
-    print(f"[full_pipeline] months={analytical['Month-Year'].nunique()}")
-    if "Invoice Date" in analytical:
-        inv = analytical["Invoice Date"].dropna()
-        print(
-            f"[invoice_time] valid_rows={len(inv)} unique_months={inv.dt.to_period('M').nunique() if len(inv) else 0} "
-            f"min={inv.min() if len(inv) else None} max={inv.max() if len(inv) else None}"
-        )
-
-    for candidate in ("Dispute Type", "Reason for Dispute Category"):
-        candidate_label_diagnostics(analytical, taxonomy, candidate)
-
-    canonical, sources = canonicalize_target_labels(analytical, taxonomy)
-    print(f"[canonical_target] matched_rows={int(canonical.notna().sum())} classes={int(canonical.nunique())}")
-    print(f"[canonical_target] source_counts={sources.value_counts(dropna=False).to_dict()}")
-    for head in ("EB", "DG"):
-        mask = analytical["Expense Nature"].astype(str).str.upper().eq(head)
-        values = canonical[mask].dropna()
-        print(
-            f"[canonical_target:{head}] rows={int(mask.sum())} matched={len(values)} classes={values.nunique()} "
-            f"counts={json.dumps([(str(k), int(v)) for k, v in values.value_counts().items()], ensure_ascii=True)}"
-        )
-
-    model = DisputeClassifier(0.60).fit(analytical, taxonomy)
-    analyzed = add_anomalies(model.predict(analytical), 0.10)
-    status_counts = analyzed["Prediction Status"].value_counts(dropna=False).to_dict()
-    print(f"[model] trained_heads={sorted(model.models.keys())}")
-    print(f"[model] label_stats={json.dumps(model.label_stats, default=str, sort_keys=True)}")
-    print(f"[model] unavailable_heads={json.dumps(model.unavailable_heads, default=str, sort_keys=True)}")
-    print(f"[model] prediction_status={status_counts}")
-    print(f"[model] anomalies={int(analyzed['Is Anomaly'].sum())}")
-
-    metrics, _ = evaluate_time_split(analytical, taxonomy, 0.60)
-    print(f"[evaluation] {json.dumps(metrics, default=str, sort_keys=True)}")
-
-    processed_analytical = prepare(processed, "model-ready").analytical
-    processed_scored = add_anomalies(model.predict(processed_analytical), 0.10)
-    processed_status = processed_scored["Prediction Status"].value_counts(dropna=False).to_dict()
-    print(f"[processed_scoring] rows={len(processed_scored)} prediction_status={processed_status} anomalies={int(processed_scored['Is Anomaly'].sum())}")
-
-    print("Repository data and end-to-end ML validation completed successfully.")
+    print("Public synthetic architecture validation completed successfully.")
 
 
 if __name__ == "__main__":
