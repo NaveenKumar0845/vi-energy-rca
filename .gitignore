@@ -5,3 +5,14 @@ __pycache__/
 .streamlit/secrets.toml
 models/
 data/outputs/
+
+# Proprietary/customer data must never be committed.
+data/raw/*
+!data/raw/README.md
+data/processed/*
+!data/processed/README.md
+data/network/*
+!data/network/README.md
+data/reference/*.xlsx
+data/reference/*.xls
+data/reference/*.xlsb
