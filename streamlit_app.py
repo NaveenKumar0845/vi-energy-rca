@@ -10,6 +10,7 @@ from src.demo_data import demo_raw, demo_kpis
 from src.genai import answer_query, rca_for_row
 from src.io_utils import read_path, read_upload, excel_bytes
 from src.models import DisputeClassifier, add_anomalies, evaluate_time_split, prepare_taxonomy
+from src.monitoring import monitoring_summary, segment_health, critical_missingness
 from src.visuals import monthly_billing, disputes, anomalies
 
 ROOT = Path(__file__).resolve().parent
@@ -154,7 +155,15 @@ def main():
     c3.metric("Auto predictions", int(analyzed["Prediction Status"].eq("Auto-predicted").sum()))
     c4.metric("Anomalies", int(analyzed["Is Anomaly"].sum()))
 
-    tabs = st.tabs(["📊 Data", "🎯 Prediction", "🚨 Anomalies", "📈 Evaluation", "🧠 RCA", "💬 Chat"])
+    tabs = st.tabs([
+        "📊 Data",
+        "🎯 Prediction",
+        "🚨 Anomalies",
+        "📈 Evaluation",
+        "🩺 Model Health",
+        "🧠 RCA",
+        "💬 Chat",
+    ])
 
     with tabs[0]:
         st.write(f"Detected input mode: **{p.mode}**")
@@ -220,6 +229,19 @@ def main():
             st.info("A historical dispute label is required for supervised evaluation.")
 
     with tabs[4]:
+        st.subheader("Operational model health")
+        st.json(monitoring_summary(analyzed))
+        st.write("**By expense head**")
+        st.dataframe(segment_health(analyzed), use_container_width=True)
+        st.write("**Critical field missingness**")
+        st.dataframe(critical_missingness(analyzed), use_container_width=True)
+        st.write("**Training-label support**")
+        st.json(clf.label_stats)
+        st.caption(
+            "These are pilot monitoring signals. Production monitoring should also include data drift, class drift, latency, model version, prompt version and reviewer feedback."
+        )
+
+    with tabs[5]:
         idx = st.selectbox(
             "Select row",
             analyzed.index.tolist(),
@@ -233,7 +255,7 @@ def main():
             with st.spinner("Generating RCA..."):
                 st.json(rca_for_row(analyzed.loc[idx], taxonomy, model_name, provider))
 
-    with tabs[5]:
+    with tabs[6]:
         q = st.text_input("Ask about a site, month, EB/DG dispute or anomaly")
         if st.button("Ask") and q:
             with st.spinner("Retrieving relevant structured rows..."):
