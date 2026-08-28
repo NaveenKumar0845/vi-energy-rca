@@ -268,9 +268,15 @@ def add_anomalies(df, contamination=0.10):
 
 
 def _chronological_periods(df: pd.DataFrame) -> tuple[pd.Series, str]:
-    # Prefer invoice timing because retro bills can refer to much older service
-    # periods. Fall back to prorated Month-Year when invoice timing lacks enough
-    # distinct periods for a meaningful holdout.
+    # The workbook's source Month column represents the operational record month
+    # and is the best available chronology for holdout evaluation. Bill service
+    # periods can be retroactive and the observed Invoice Date field has only one
+    # month in the supplied workbook, so both are fallbacks rather than defaults.
+    if "Record Month" in df:
+        record = pd.to_datetime(df["Record Month"], errors="coerce").dt.to_period("M")
+        if record.notna().sum() >= max(4, int(len(df) * 0.5)) and record.dropna().nunique() >= 4:
+            return record, "Record Month"
+
     if "Invoice Date" in df:
         invoice = pd.to_datetime(df["Invoice Date"], errors="coerce")
         invoice_periods = invoice.dt.to_period("M")
@@ -279,6 +285,7 @@ def _chronological_periods(df: pd.DataFrame) -> tuple[pd.Series, str]:
             and invoice_periods.dropna().nunique() >= 4
         ):
             return invoice_periods, "Invoice Date"
+
     return pd.to_datetime(df["Month-Year"], errors="coerce").dt.to_period("M"), "Month-Year"
 
 
