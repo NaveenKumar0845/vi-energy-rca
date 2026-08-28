@@ -173,25 +173,30 @@ def add_anomalies(df, contamination=0.10):
     return out
 
 
-def _chronological_periods(df: pd.DataFrame) -> pd.Series:
-    # Invoice Date reflects when Vi received/processed the bill and is the safer
-    # evaluation clock when retro-billing creates historical billing periods.
+def _chronological_periods(df: pd.DataFrame) -> tuple[pd.Series, str]:
+    # Prefer invoice timing because retro bills can refer to much older service
+    # periods. Fall back to prorated Month-Year when invoice timing lacks enough
+    # distinct periods for a meaningful holdout.
     if "Invoice Date" in df:
         invoice = pd.to_datetime(df["Invoice Date"], errors="coerce")
-        if invoice.notna().sum() >= max(4, int(len(df) * 0.5)):
-            return invoice.dt.to_period("M")
-    return pd.to_datetime(df["Month-Year"], errors="coerce").dt.to_period("M")
+        invoice_periods = invoice.dt.to_period("M")
+        if (
+            invoice.notna().sum() >= max(4, int(len(df) * 0.5))
+            and invoice_periods.dropna().nunique() >= 4
+        ):
+            return invoice_periods, "Invoice Date"
+    return pd.to_datetime(df["Month-Year"], errors="coerce").dt.to_period("M"), "Month-Year"
 
 
 def evaluate_time_split(df, taxonomy, threshold=0.60):
-    periods = _chronological_periods(df)
+    periods, basis = _chronological_periods(df)
     valid = periods.notna()
     counts = periods[valid].value_counts().sort_index()
     if len(counts) < 4:
-        return {"error": "Need at least four chronological periods"}, pd.DataFrame()
+        return {"error": "Need at least four chronological periods", "time_basis": basis}, pd.DataFrame()
 
-    # Select a whole-month cutoff that puts approximately 75% of rows in train,
-    # rather than 75% of unique months (which performs poorly with sparse retro bills).
+    # Select a whole-period cutoff that places roughly 75% of rows in train,
+    # rather than 75% of unique months, which is distorted by sparse retro bills.
     cumulative = counts.cumsum()
     target = counts.sum() * 0.75
     cut_candidates = cumulative[cumulative >= target]
@@ -202,7 +207,7 @@ def evaluate_time_split(df, taxonomy, threshold=0.60):
     train = df[periods <= cut]
     test = df[periods > cut]
     if train.empty or test.empty:
-        return {"error": "Chronological split produced an empty train or test set"}, pd.DataFrame()
+        return {"error": "Chronological split produced an empty train or test set", "time_basis": basis}, pd.DataFrame()
 
     model = DisputeClassifier(threshold).fit(train, taxonomy)
     pred = model.predict(test)
@@ -211,7 +216,7 @@ def evaluate_time_split(df, taxonomy, threshold=0.60):
         & pred["Predicted Dispute Type"].ne("Manual Review Required")
     ]
     m = {
-        "time_basis": "Invoice Date" if "Invoice Date" in df and pd.to_datetime(df["Invoice Date"], errors="coerce").notna().sum() >= max(4, int(len(df) * 0.5)) else "Month-Year",
+        "time_basis": basis,
         "cutoff_period": str(cut),
         "train_rows": len(train),
         "test_rows": len(test),
