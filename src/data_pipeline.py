@@ -12,6 +12,7 @@ ALIASES = {
     "IP Site ID": ["ip site id"],
     "Expense Nature": ["expense nature rental eb dg tax de loading", "expense nature"],
     "Month-Year": ["month year"],
+    "Record Month": ["month"],
     "Actual Bill From Date": ["actual bill from date"],
     "Actual Bill To Date": ["actual bill to date"],
     "Invoice Date": ["invoice date"],
@@ -106,8 +107,9 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["Actual Bill From Date", "Actual Bill To Date", "Invoice Date"]:
         if c in df:
             df[c] = _date_series(df[c])
-    if "Month-Year" in df:
-        df["Month-Year"] = _month_year(df["Month-Year"])
+    for c in ["Month-Year", "Record Month"]:
+        if c in df:
+            df[c] = _month_year(df[c])
     for c in [
         "Billed Amount (Excl GST)",
         "Debit Amount (Excl tax)",
