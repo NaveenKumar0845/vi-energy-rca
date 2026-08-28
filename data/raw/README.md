@@ -1,6 +1,9 @@
 # Raw data
-After the GitHub repository is **private**, upload the historical workbook here using the exact filename:
 
-`Dispute_Head_UPE_Indus_jan23toDec23.xlsx`
+Do **not** commit proprietary Vodafone Idea workbooks here.
 
-This is the labelled invoice/billing history used for proration and supervised model training. Do not place proprietary Vi data in a public repository.
+For local/private testing, place the historical billing/dispute workbook in this folder on your local clone. The folder is ignored by Git except for this README.
+
+Representative schema is documented in `docs/DATA_CONTRACT.md`.
+
+The public Streamlit demo uses generated synthetic records from `src/demo_data.py`, so no Vi source data is required.
