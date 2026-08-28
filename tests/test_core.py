@@ -1,12 +1,14 @@
 import pandas as pd
+from src.business_rules import derive_business_signals
 from src.data_pipeline import prorate_raw, prepare
-from src.demo_data import demo_raw
+from src.demo_data import demo_raw, demo_kpis
 from src.models import (
     DisputeClassifier,
     add_anomalies,
     canonicalize_target_labels,
     prepare_taxonomy,
 )
+from src.monitoring import monitoring_summary
 
 TAX = pd.DataFrame({
     "Dispute Head": ["EB", "EB", "EB", "DG", "DG", "DG"],
@@ -38,7 +40,7 @@ def test_cross_month_proration_reconciles():
 
 
 def test_features_use_prior_history():
-    raw = demo_raw().query("`IP Site ID` == 'IN-100001' and `Expense Nature` == 'EB'").head(3)
+    raw = demo_raw().query("`IP Site ID` == 'DEMO-100001' and `Expense Nature` == 'EB'").head(3)
     p = prepare(raw, "raw").analytical.sort_values("Month-Year")
     assert pd.isna(p.iloc[0]["Site Historical Average"])
     assert p.iloc[1]["Site Historical Average"] == p.iloc[0]["Prorated Billed Amount (Excl GST)"]
@@ -137,3 +139,33 @@ def test_classifier_can_train_eb_and_dg_from_supported_canonical_classes():
     assert set(model.models) == {"EB", "DG"}
     assert model.label_stats["EB"]["usable_training_rows"] == 16
     assert model.label_stats["DG"]["usable_training_rows"] == 16
+
+
+def test_synthetic_network_join_and_business_signals():
+    p = prepare(demo_raw(sites=2), "raw", demo_kpis(sites=2)).analytical
+    assert "RSRP (dBm)" in p.columns
+    row = p.iloc[-1].copy()
+    row["Is Anomaly"] = True
+    row["Anomaly Percentile"] = 0.99
+    row["Predicted Dispute Type"] = "High EB Consumption"
+    row["Prediction Confidence"] = 0.82
+    signals = derive_business_signals(row)
+    assert any(s["type"] == "model_signal" for s in signals)
+
+
+def test_monitoring_summary_returns_operational_rates():
+    p = prepare(demo_raw(sites=4), "raw").analytical
+    taxonomy = prepare_taxonomy(pd.DataFrame({
+        "Dispute Head": ["EB"] * 8 + ["DG"] * 8,
+        "Dispute Sub-Category": [
+            "High EB Consumption", "Incorrect EB Tariffs", "Incorrect / High DC ratio", "Duplicate/Retro Billing",
+            "Site Locked / switch-off Billing", "Not part of BCC", "Non Active Non Radiating site", "Other (Please provide comment under separate Column)",
+            "High DG Consumption", "Incorrect DG Rate", "Incorrect / negative / High DG run hour", "Incorrect / High DC ratio",
+            "Duplicate/Retro Billing", "Not part of BCC", "Non Active Non Radiating site", "Other (Please provide comment under separate Column)",
+        ],
+    }))
+    model = DisputeClassifier(.30).fit(p, taxonomy)
+    analyzed = add_anomalies(model.predict(p), .10)
+    summary = monitoring_summary(analyzed)
+    assert 0 <= summary["prediction_coverage"] <= 1
+    assert 0 <= summary["anomaly_rate"] <= 1
